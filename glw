@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# glw — watch a gitlab pipeline (and any downstream / triggered children); ding when done.
+
+set -uo pipefail
+
+POLL=${GLW_POLL:-10}
+
+usage() {
+  cat <<'EOF'
+glw — watch a gitlab pipeline; ding when done.
+
+  glw                 latest pipeline on current branch
+  glw <id>            pipeline by id (in current repo)
+  glw <url>           pipeline by gitlab url (any repo)
+  glw -h | --help     this
+
+follows downstream / triggered child pipelines automatically.
+notifies on manual gates anywhere in the tree (and keeps watching).
+exits when the whole tree is done — 0 if all green, 1 if any failed.
+
+env:
+  GLW_POLL=10         poll seconds (default 10)
+EOF
+}
+
+die() { printf 'glw: %s\n' "$*" >&2; exit 1; }
+ts()  { date +%H:%M:%S; }
+log() { printf '%s  %s\n' "$(ts)" "$*"; }
+
+# --- json helpers (jq-free; deliberate simplicity) -------------------------
+
+# extract_str <key> from JSON on stdin: first "<key>":"<value>" string field
+extract_str() {
+  grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]+\"" \
+    | head -1 \
+    | sed -E 's/^[^"]*"[^"]+"[[:space:]]*:[[:space:]]*"([^"]+)".*$/\1/'
+}
+
+# extract_num <key> from JSON on stdin: first "<key>":<integer> field
+extract_num() {
+  grep -oE "\"$1\"[[:space:]]*:[[:space:]]*[0-9]+" \
+    | head -1 \
+    | grep -oE '[0-9]+$'
+}
+
+# --- gitlab api wrappers (numeric project ids → no url-encoding hassle) ----
+
+fetch_project_id() {
+  # arg: empty (use :fullpath, current repo) or "group/project" path
+  local p=${1:-} ep
+  if [[ -z $p ]]; then ep="projects/:fullpath"
+  else                 ep="projects/${p//\//%2F}"
+  fi
+  glab api "$ep" 2>/dev/null | extract_num id
+}
+fetch_latest_pipeline_json() {
+  glab api "projects/$1/pipelines?ref=$2&per_page=1" 2>/dev/null
+}
+fetch_pipeline_json() {
+  glab api "projects/$1/pipelines/$2" 2>/dev/null
+}
+fetch_bridges_json() {
+  glab api "projects/$1/pipelines/$2/bridges" 2>/dev/null
+}
+
+# --- desktop notify + bell -------------------------------------------------
+
+notify() {
+  local title=$1 msg=$2
+  if   command -v terminal-notifier >/dev/null 2>&1; then
+    terminal-notifier -title "$title" -message "$msg" >/dev/null 2>&1 || :
+  elif command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 || :
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send "$title" "$msg" 2>/dev/null || :
+  fi
+  printf '\a'
+}
+
+# --- pipeline registry: parallel arrays, keyed by pipeline id (globally unique)
+
+PIDS=() PROJS=() STATUSES=() URLS=() MANUAL_NOTIFIED=()
+
+idx_of() {
+  local pid=$1 i
+  for i in "${!PIDS[@]}"; do
+    [[ ${PIDS[$i]} == "$pid" ]] && { printf '%s' "$i"; return 0; }
+  done
+  return 1
+}
+
+register() {
+  # register <pid> <proj> <url>; 0 if newly added, 1 if already known
+  local pid=$1 proj=$2 url=$3
+  idx_of "$pid" >/dev/null && return 1
+  PIDS+=("$pid"); PROJS+=("$proj"); STATUSES+=(""); URLS+=("$url"); MANUAL_NOTIFIED+=(0)
+  return 0
+}
+
+# --- discover downstream/triggered child pipelines ------------------------
+
+discover_children() {
+  local proj=$1 pid=$2 bridges flat match cpid cproj curl
+  bridges=$(fetch_bridges_json "$proj" "$pid") || return 0
+  [[ -z $bridges ]] && return 0
+  flat=$(printf '%s' "$bridges" | tr -d '\n\r')
+
+  while IFS= read -r match; do
+    [[ -z $match ]] && continue
+    cpid=$(printf  '%s' "$match" | extract_num id)
+    cproj=$(printf '%s' "$match" | extract_num project_id)
+    curl=$(printf  '%s' "$match" | extract_str web_url)
+    [[ -z $cpid || -z $cproj ]] && continue
+    if register "$cpid" "$cproj" "$curl"; then
+      log "#$pid → discovered downstream #$cpid${curl:+  $curl}"
+    fi
+  done < <(printf '%s' "$flat" | grep -oE '"downstream_pipeline":[[:space:]]*\{[^}]*\}')
+}
+
+# --- main ------------------------------------------------------------------
+
+main() {
+  case ${1:-} in -h|--help) usage; exit 0 ;; esac
+  command -v glab >/dev/null 2>&1 || die "glab not found in PATH"
+
+  local arg=${1:-} root_proj root_pid root_path=""
+
+  if [[ -z $arg ]]; then
+    local branch
+    branch=$(git symbolic-ref --short HEAD 2>/dev/null) || die "not in a git repo (and no id/url given)"
+    root_proj=$(fetch_project_id "")
+    [[ -z $root_proj ]] && die "couldn't resolve current repo via glab (auth? remote?)"
+    local list_json
+    list_json=$(fetch_latest_pipeline_json "$root_proj" "$branch")
+    [[ -z $list_json || $list_json == "[]" ]] && die "no pipelines found for ref '$branch'"
+    root_pid=$(printf '%s' "$list_json" | extract_num id)
+    [[ -z $root_pid ]] && die "couldn't extract pipeline id"
+  elif [[ $arg =~ ^[0-9]+$ ]]; then
+    root_pid=$arg
+    root_proj=$(fetch_project_id "")
+    [[ -z $root_proj ]] && die "couldn't resolve current repo (run from inside the repo, or pass a url)"
+  elif [[ $arg =~ ^https?://[^/]+/(.+)/-/pipelines/([0-9]+) ]]; then
+    root_path=${BASH_REMATCH[1]}
+    root_pid=${BASH_REMATCH[2]}
+    root_proj=$(fetch_project_id "$root_path")
+    [[ -z $root_proj ]] && die "couldn't resolve project '$root_path' via glab"
+  else
+    die "can't parse '$arg' as pipeline id or url"
+  fi
+
+  # sanity-check the root so we fail fast on bad ids
+  local root_json root_status
+  root_json=$(fetch_pipeline_json "$root_proj" "$root_pid")
+  [[ -z $root_json ]] && die "pipeline #$root_pid not found in project $root_proj"
+  root_status=$(printf '%s' "$root_json" | extract_str status)
+  [[ -z $root_status ]] && die "couldn't read pipeline #$root_pid (api error?)"
+
+  register "$root_pid" "$root_proj" "$(printf '%s' "$root_json" | extract_str web_url)"
+  log "watching pipeline #$root_pid (root status: $root_status)"
+
+  local failed_ids=()
+
+  while :; do
+    local active=0 i pid proj prev json status url
+
+    # snapshot length — register() can grow the arrays mid-loop
+    local n=${#PIDS[@]}
+    for (( i=0; i<n; i++ )); do
+      pid=${PIDS[$i]}
+      proj=${PROJS[$i]}
+      prev=${STATUSES[$i]}
+
+      # already terminally done? skip. (manual is NOT terminal — keep polling)
+      case $prev in success|failed|canceled|skipped) continue ;; esac
+
+      json=$(fetch_pipeline_json "$proj" "$pid")
+      if [[ -z $json ]]; then active=1; continue; fi
+      status=$(printf '%s' "$json" | extract_str status)
+      if [[ -z $status ]]; then active=1; continue; fi
+
+      url=$(printf '%s' "$json" | extract_str web_url)
+      [[ -z ${URLS[i]} && -n $url ]] && URLS[i]=$url
+
+      if [[ $status != "$prev" ]]; then
+        log "#$pid $status${URLS[i]:+  ${URLS[i]}}"
+        STATUSES[i]=$status
+      fi
+
+      case $status in
+        success|skipped)
+          : ;; # done, no action
+        failed|canceled)
+          failed_ids+=("$pid") ;;
+        manual)
+          if [[ ${MANUAL_NOTIFIED[i]} == 0 ]]; then
+            notify "pipeline #$pid: manual" "needs manual trigger${URLS[i]:+  ${URLS[i]}}"
+            MANUAL_NOTIFIED[i]=1
+          fi
+          active=1 ;;
+        *)
+          active=1 ;;
+      esac
+
+      # always look for new downstreams on this pipeline (cheap; bridges may
+      # appear at any time while parent is non-terminal, and once-on-terminal
+      # catches late triggers from manual bridge jobs).
+      discover_children "$proj" "$pid"
+    done
+
+    if ((!active)); then
+      if ((${#failed_ids[@]})); then
+        notify "pipeline failed" "$(printf '#%s ' "${failed_ids[@]}")"
+        log "✗ done — failed: $(printf '#%s ' "${failed_ids[@]}")"
+        exit 1
+      fi
+      notify "pipeline success" "$(printf '#%s ' "${PIDS[@]}")"
+      log "✓ done — success: $(printf '#%s ' "${PIDS[@]}")"
+      exit 0
+    fi
+
+    sleep "$POLL"
+  done
+}
+
+main "$@"
