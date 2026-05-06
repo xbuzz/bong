@@ -1,6 +1,8 @@
+![bong — watch a pipeline. rip it. ding when done.](docs/hero.png)
+
 # bong
 
-watch a gitlab pipeline. ding when done.
+watch a pipeline. rip it. ding when done.
 
 ```
 $ bong
