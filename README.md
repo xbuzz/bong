@@ -1,9 +1,9 @@
-# glw
+# bong
 
 watch a gitlab pipeline. ding when done.
 
 ```
-$ glw
+$ bong
 14:02:11  watching pipeline #987654 (root status: running)
 14:02:11  #987654 running   https://gitlab.com/foo/bar/-/pipelines/987654
 14:03:42  #987654 → discovered downstream #987655  https://gitlab.com/foo/deploy/-/pipelines/987655
@@ -27,23 +27,23 @@ prereq — install [`glab`](https://gitlab.com/gitlab-org/cli) and log in once:
 glab auth login
 ```
 
-then drop `glw` somewhere on your `$PATH`:
+then drop `bong` somewhere on your `$PATH`:
 
 ```sh
-sudo install -m 0755 glw /usr/local/bin/glw
+sudo install -m 0755 bong /usr/local/bin/bong
 ```
 
-(or just `chmod +x glw && cp glw ~/bin/` — whatever. it's one script.)
+(or just `chmod +x bong && cp bong ~/bin/` — whatever. it's one script.)
 
 ## use
 
 ```sh
-glw                                                  # latest pipeline on current branch (run from inside the repo)
-glw 1234567                                          # by pipeline id (uses current repo for project context)
-glw https://gitlab.com/foo/bar/-/pipelines/1234567   # by url — works from anywhere, including cross-project
+bong                                                  # latest pipeline on current branch (run from inside the repo)
+bong 1234567                                          # by pipeline id (uses current repo for project context)
+bong https://gitlab.com/foo/bar/-/pipelines/1234567   # by url — works from anywhere, including cross-project
 ```
 
-what it does, every `GLW_POLL` seconds:
+what it does, every `BONG_POLL` seconds:
 
 1. polls the pipeline you pointed it at
 2. discovers any downstream / triggered child pipelines via the `bridges` api and adds them to the watch
@@ -53,7 +53,7 @@ what it does, every `GLW_POLL` seconds:
 so you can chain:
 
 ```sh
-glw && ./deploy.sh
+bong && ./deploy.sh
 ```
 
 ctrl-c to stop watching at any time.
@@ -64,19 +64,19 @@ env vars (also see `.env.example`):
 
 | var        | default | what                  |
 |------------|---------|-----------------------|
-| `GLW_POLL` | `10`    | seconds between polls |
+| `BONG_POLL` | `10`    | seconds between polls |
 
-`glab` itself handles auth / token / instance host — `glw` doesn't need any of that.
+`glab` itself handles auth / token / instance host — `bong` doesn't need any of that.
 
 ## notifications
 
-best to worst, glw tries each in turn:
+best to worst, bong tries each in turn:
 
 - **mac**: [`terminal-notifier`](https://github.com/julienXX/terminal-notifier) → `osascript` (built-in)
 - **linux**: `notify-send` (libnotify; usually preinstalled with most desktops)
 - **fallback**: terminal bell (`\a`)
 
-if you're on a headless box, the bell is all you'll get — that's fine, exit code still works for `glw && deploy`.
+if you're on a headless box, the bell is all you'll get — that's fine, exit code still works for `bong && deploy`.
 
 ## how it works (briefly)
 

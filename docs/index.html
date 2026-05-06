@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>glw — watch a gitlab pipeline. ding when done.</title>
+<title>bong — watch a gitlab pipeline. ding when done.</title>
 <meta name="description" content="one bash file. zero deps beyond glab. mac + linux. caveman tier.">
 <style>
   :root {
@@ -116,11 +116,11 @@
 <body>
 <main>
   <header>
-    <h1>glw</h1>
+    <h1>bong</h1>
     <p>watch a gitlab pipeline. ding when done.</p>
   </header>
 
-  <div class="term demo" id="demo"><span class="dots"><span class="r">●</span> <span class="y">●</span> <span class="g">●</span></span><span class="line prompt">glw</span>
+  <div class="term demo" id="demo"><span class="dots"><span class="r">●</span> <span class="y">●</span> <span class="g">●</span></span><span class="line prompt">bong</span>
 <span class="line"><span class="ts">14:02:11</span>  watching pipeline #987654 (root status: <span class="running">running</span>)</span>
 <span class="line"><span class="ts">14:02:11</span>  #987654 <span class="running">running</span>   <span class="url">https://gitlab.com/foo/bar/-/pipelines/987654</span></span>
 <span class="line"><span class="ts">14:03:42</span>  #987654 → discovered downstream #987655  <span class="url">https://gitlab.com/foo/deploy/-/pipelines/987655</span></span>
@@ -139,33 +139,33 @@
   <h2>install</h2>
   <p>prereq — install <a href="https://gitlab.com/gitlab-org/cli">glab</a> and log in once:</p>
 <div class="term"><span class="prompt">glab auth login</span></div>
-  <p>then drop <code>glw</code> somewhere on your <code>$PATH</code>:</p>
-<div class="term"><span class="prompt">sudo install -m 0755 glw /usr/local/bin/glw</span></div>
-  <p>(or <code>chmod +x glw && cp glw ~/bin/</code> — whatever. it's one script.)</p>
+  <p>then drop <code>bong</code> somewhere on your <code>$PATH</code>:</p>
+<div class="term"><span class="prompt">sudo install -m 0755 bong /usr/local/bin/bong</span></div>
+  <p>(or <code>chmod +x bong && cp bong ~/bin/</code> — whatever. it's one script.)</p>
 
   <h2>use</h2>
-<div class="term"><span class="prompt">glw</span>                                                  <span class="note"># latest pipeline on current branch</span>
-<span class="prompt">glw 1234567</span>                                          <span class="note"># by pipeline id</span>
-<span class="prompt">glw https://gitlab.com/foo/bar/-/pipelines/1234567</span>   <span class="note"># by url, cross-project</span></div>
+<div class="term"><span class="prompt">bong</span>                                                  <span class="note"># latest pipeline on current branch</span>
+<span class="prompt">bong 1234567</span>                                          <span class="note"># by pipeline id</span>
+<span class="prompt">bong https://gitlab.com/foo/bar/-/pipelines/1234567</span>   <span class="note"># by url, cross-project</span></div>
 
   <p>chain it:</p>
-<div class="term"><span class="prompt">glw && ./deploy.sh</span></div>
+<div class="term"><span class="prompt">bong && ./deploy.sh</span></div>
 
   <p>exits <code>0</code> on all-green, <code>1</code> if anything failed/canceled. ctrl-c to bail.</p>
 
   <h2>config</h2>
-<div class="term">GLW_POLL=10   <span class="note"># seconds between polls (default 10)</span></div>
-  <p><code>glab</code> handles auth / token / instance host — <code>glw</code> doesn't.</p>
+<div class="term">BONG_POLL=10   <span class="note"># seconds between polls (default 10)</span></div>
+  <p><code>glab</code> handles auth / token / instance host — <code>bong</code> doesn't.</p>
 
   <h2>notifications</h2>
   <ul>
     <li><b>mac</b> — <a href="https://github.com/julienXX/terminal-notifier">terminal-notifier</a>, falls back to <code>osascript</code></li>
     <li><b>linux</b> — <code>notify-send</code> (libnotify)</li>
-    <li><b>headless</b> — terminal bell. exit code still works for <code>glw && deploy</code>.</li>
+    <li><b>headless</b> — terminal bell. exit code still works for <code>bong && deploy</code>.</li>
   </ul>
 
   <footer>
-    <a href="https://github.com/xbuzz/glw">source on github</a> · MIT
+    <a href="https://github.com/xbuzz/bong">source on github</a> · MIT
   </footer>
 </main>
 </body>

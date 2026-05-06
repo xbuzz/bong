@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# glw — watch a gitlab pipeline (and any downstream / triggered children); ding when done.
+# bong — watch a gitlab pipeline (and any downstream / triggered children); ding when done.
 
 set -uo pipefail
 
-POLL=${GLW_POLL:-10}
+POLL=${BONG_POLL:-10}
 
 usage() {
   cat <<'EOF'
-glw — watch a gitlab pipeline; ding when done.
+bong — watch a gitlab pipeline; ding when done.
 
-  glw                 latest pipeline on current branch
-  glw <id>            pipeline by id (in current repo)
-  glw <url>           pipeline by gitlab url (any repo)
-  glw -h | --help     this
+  bong                 latest pipeline on current branch
+  bong <id>            pipeline by id (in current repo)
+  bong <url>           pipeline by gitlab url (any repo)
+  bong -h | --help     this
 
 follows downstream / triggered child pipelines automatically.
 notifies on manual gates anywhere in the tree (and keeps watching).
 exits when the whole tree is done — 0 if all green, 1 if any failed.
 
 env:
-  GLW_POLL=10         poll seconds (default 10)
+  BONG_POLL=10         poll seconds (default 10)
 EOF
 }
 
-die() { printf 'glw: %s\n' "$*" >&2; exit 1; }
+die() { printf 'bong: %s\n' "$*" >&2; exit 1; }
 ts()  { date +%H:%M:%S; }
 log() { printf '%s  %s\n' "$(ts)" "$*"; }
 
