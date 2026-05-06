@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>glw — watch a gitlab pipeline. ding when done.</title>
+<meta name="description" content="one bash file. zero deps beyond glab. mac + linux. caveman tier.">
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --fg: #c9d1d9;
+    --dim: #6e7681;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --blue: #58a6ff;
+    --magenta: #bc8cff;
+    --border: #30363d;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  main { max-width: 820px; margin: 0 auto; padding: 56px 20px 80px; }
+  header h1 { font-size: 64px; margin: 0; letter-spacing: -2px; line-height: 1; }
+  header p { margin: 10px 0 36px; color: var(--dim); }
+  h2 {
+    font-size: 13px; text-transform: lowercase; color: var(--dim);
+    margin: 40px 0 12px; border-bottom: 1px solid var(--border);
+    padding-bottom: 6px; letter-spacing: 0.5px;
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { background: var(--panel); padding: 1px 5px; border-radius: 3px; }
+  .term {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    white-space: pre;
+    margin: 10px 0;
+  }
+  .dots {
+    display: block;
+    margin-bottom: 10px;
+    letter-spacing: 4px;
+  }
+  .dots .r { color: #ff5f56; }
+  .dots .y { color: #ffbd2e; }
+  .dots .g { color: #27c93f; }
+  .prompt::before { content: "$ "; color: var(--green); }
+  .demo .line {
+    display: block;
+    opacity: 0;
+    animation: appear 0.25s ease-out forwards;
+  }
+  .demo .line:nth-child(2)  { animation-delay: 0.3s; }
+  .demo .line:nth-child(3)  { animation-delay: 0.7s; }
+  .demo .line:nth-child(4)  { animation-delay: 1.4s; }
+  .demo .line:nth-child(5)  { animation-delay: 1.9s; }
+  .demo .line:nth-child(6)  { animation-delay: 2.6s; }
+  .demo .line:nth-child(7)  { animation-delay: 3.4s; }
+  .demo .line:nth-child(8)  { animation-delay: 4.1s; }
+  .demo .line:nth-child(9)  { animation-delay: 4.8s; }
+  .demo .line:nth-child(10) { animation-delay: 5.5s; }
+  .demo .line:nth-child(11) { animation-delay: 6.2s; }
+  @keyframes appear {
+    from { opacity: 0; transform: translateY(2px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .ts       { color: var(--dim); }
+  .running  { color: var(--yellow); }
+  .success  { color: var(--green); }
+  .manual   { color: var(--magenta); }
+  .created  { color: var(--blue); }
+  .url      { color: var(--blue); text-decoration: underline; }
+  .note     { color: var(--dim); font-style: italic; }
+  .ok       { color: var(--green); font-weight: bold; }
+  .cursor {
+    display: inline-block;
+    width: 7px; height: 1em;
+    background: var(--fg);
+    vertical-align: -2px; margin-left: 2px;
+    opacity: 0;
+    animation: appear 0.2s 6.6s forwards, blink 1s 6.8s steps(2) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .replay {
+    color: var(--dim);
+    font: inherit;
+    background: none;
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  .replay:hover { color: var(--fg); border-color: var(--fg); }
+  ul { padding-left: 20px; }
+  li { margin: 4px 0; }
+  footer {
+    margin-top: 56px;
+    color: var(--dim);
+    font-size: 12px;
+    text-align: center;
+    border-top: 1px solid var(--border);
+    padding-top: 20px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>glw</h1>
+    <p>watch a gitlab pipeline. ding when done.</p>
+  </header>
+
+  <div class="term demo" id="demo"><span class="dots"><span class="r">●</span> <span class="y">●</span> <span class="g">●</span></span><span class="line prompt">glw</span>
+<span class="line"><span class="ts">14:02:11</span>  watching pipeline #987654 (root status: <span class="running">running</span>)</span>
+<span class="line"><span class="ts">14:02:11</span>  #987654 <span class="running">running</span>   <span class="url">https://gitlab.com/foo/bar/-/pipelines/987654</span></span>
+<span class="line"><span class="ts">14:03:42</span>  #987654 → discovered downstream #987655  <span class="url">https://gitlab.com/foo/deploy/-/pipelines/987655</span></span>
+<span class="line"><span class="ts">14:03:42</span>  #987655 <span class="created">created</span>   <span class="url">https://gitlab.com/foo/deploy/-/pipelines/987655</span></span>
+<span class="line"><span class="ts">14:04:11</span>  #987655 <span class="manual">manual</span>    <span class="url">https://gitlab.com/foo/deploy/-/pipelines/987655</span>
+                <span class="note">↑ desktop notification fires here ("needs manual trigger")</span></span>
+<span class="line"><span class="ts">14:06:31</span>  #987655 <span class="running">running</span></span>
+<span class="line"><span class="ts">14:08:01</span>  #987654 <span class="success">success</span></span>
+<span class="line"><span class="ts">14:08:11</span>  #987655 <span class="success">success</span></span>
+<span class="line"><span class="ts">14:08:11</span>  <span class="ok">✓ done</span> — success: #987654 #987655
+                <span class="note">↑ second notification fires here</span><span class="cursor"></span></span></div>
+  <button class="replay" onclick="const d=document.getElementById('demo');const c=d.cloneNode(true);d.replaceWith(c);c.id='demo';">↻ replay</button>
+
+  <p style="margin-top:28px">one bash file. zero deps beyond <code>glab</code>. mac + linux. caveman tier.</p>
+
+  <h2>install</h2>
+  <p>prereq — install <a href="https://gitlab.com/gitlab-org/cli">glab</a> and log in once:</p>
+<div class="term"><span class="prompt">glab auth login</span></div>
+  <p>then drop <code>glw</code> somewhere on your <code>$PATH</code>:</p>
+<div class="term"><span class="prompt">sudo install -m 0755 glw /usr/local/bin/glw</span></div>
+  <p>(or <code>chmod +x glw && cp glw ~/bin/</code> — whatever. it's one script.)</p>
+
+  <h2>use</h2>
+<div class="term"><span class="prompt">glw</span>                                                  <span class="note"># latest pipeline on current branch</span>
+<span class="prompt">glw 1234567</span>                                          <span class="note"># by pipeline id</span>
+<span class="prompt">glw https://gitlab.com/foo/bar/-/pipelines/1234567</span>   <span class="note"># by url, cross-project</span></div>
+
+  <p>chain it:</p>
+<div class="term"><span class="prompt">glw && ./deploy.sh</span></div>
+
+  <p>exits <code>0</code> on all-green, <code>1</code> if anything failed/canceled. ctrl-c to bail.</p>
+
+  <h2>config</h2>
+<div class="term">GLW_POLL=10   <span class="note"># seconds between polls (default 10)</span></div>
+  <p><code>glab</code> handles auth / token / instance host — <code>glw</code> doesn't.</p>
+
+  <h2>notifications</h2>
+  <ul>
+    <li><b>mac</b> — <a href="https://github.com/julienXX/terminal-notifier">terminal-notifier</a>, falls back to <code>osascript</code></li>
+    <li><b>linux</b> — <code>notify-send</code> (libnotify)</li>
+    <li><b>headless</b> — terminal bell. exit code still works for <code>glw && deploy</code>.</li>
+  </ul>
+
+  <footer>
+    <a href="https://github.com/xbuzz/glw">source on github</a> · MIT
+  </footer>
+</main>
+</body>
+</html>
