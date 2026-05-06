@@ -1,0 +1,23 @@
+name: bump homebrew formula
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'tag to bump to (e.g. v0.3.0)'
+        required: true
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dawidd6/action-homebrew-bump-formula@v7
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          tap: xbuzz/homebrew-bong
+          formula: bong
+          tag: ${{ inputs.tag || github.ref_name }}
+          no_fork: true
