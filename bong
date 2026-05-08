@@ -1,25 +1,34 @@
 #!/usr/bin/env bash
-# bong — watch a gitlab pipeline (and any downstream / triggered children); ding when done.
+# bong — watch a gitlab pipeline / gitea actions run (and any downstream / triggered children); ding when done.
 
 set -uo pipefail
 
 POLL=${BONG_POLL:-10}
+PROVIDER=${BONG_PROVIDER:-}   # gitlab | gitea ; auto-detected if empty
 
 usage() {
   cat <<'EOF'
-bong — watch a gitlab pipeline; ding when done.
+bong — watch a gitlab pipeline or gitea actions run; ding when done.
 
-  bong                 latest pipeline on current branch
-  bong <id>            pipeline by id (in current repo)
-  bong <url>           pipeline by gitlab url (any repo)
+  bong                 latest pipeline / run on current branch
+  bong <id>            pipeline / run by id (in current repo)
+  bong <url>           by gitlab pipeline url or gitea actions run url
   bong -h | --help     this
 
-follows downstream / triggered child pipelines automatically.
-notifies on manual gates anywhere in the tree (and keeps watching).
-exits when the whole tree is done — 0 if all green, 1 if any failed.
+gitlab: follows downstream / triggered child pipelines automatically;
+        notifies on manual gates anywhere in the tree (and keeps watching).
+gitea : watches a single workflow run (gitea actions has no downstream
+        or manual-gate concept).
+
+exits when watched runs are done — 0 if all green, 1 if any failed.
 
 env:
   BONG_POLL=10         poll seconds (default 10)
+  BONG_PROVIDER=       force "gitlab" or "gitea" (auto-detected from url
+                       or git remote otherwise)
+  GITEA_HOST=          gitea base url, e.g. https://codeberg.org
+                       (auto-detected from git remote if unset)
+  GITEA_TOKEN=         gitea api token (optional for public repos)
 EOF
 }
 
@@ -43,24 +52,146 @@ extract_num() {
     | grep -oE '[0-9]+$'
 }
 
+# --- provider detection ----------------------------------------------------
+
+detect_provider() {
+  local arg=${1:-} remote
+
+  # explicit override (already set from env)
+  [[ -n $PROVIDER ]] && { printf '%s' "$PROVIDER"; return; }
+
+  # url shape is the strongest signal
+  if   [[ $arg =~ ^https?://[^/]+/.+/-/pipelines/[0-9]+ ]]; then
+    printf 'gitlab'; return
+  elif [[ $arg =~ ^https?://[^/]+/.+/actions/runs/[0-9]+ ]]; then
+    printf 'gitea';  return
+  fi
+
+  # fall back to current repo's remote host
+  remote=$(git remote get-url origin 2>/dev/null) || remote=
+  case $remote in
+    *gitlab*)       printf 'gitlab'; return ;;
+    *codeberg.org*) printf 'gitea';  return ;;
+    *gitea*)        printf 'gitea';  return ;;
+  esac
+
+  # default: keep historical behaviour
+  printf 'gitlab'
+}
+
 # --- gitlab api wrappers (numeric project ids → no url-encoding hassle) ----
 
-fetch_project_id() {
-  # arg: empty (use :fullpath, current repo) or "group/project" path
+gl_fetch_project_id() {
   local p=${1:-} ep
   if [[ -z $p ]]; then ep="projects/:fullpath"
   else                 ep="projects/${p//\//%2F}"
   fi
   glab api "$ep" 2>/dev/null | extract_num id
 }
-fetch_latest_pipeline_json() {
+gl_fetch_latest_pipeline_json() {
   glab api "projects/$1/pipelines?ref=$2&per_page=1" 2>/dev/null
 }
-fetch_pipeline_json() {
+gl_fetch_pipeline_json() {
   glab api "projects/$1/pipelines/$2" 2>/dev/null
 }
-fetch_bridges_json() {
+gl_fetch_bridges_json() {
   glab api "projects/$1/pipelines/$2/bridges" 2>/dev/null
+}
+
+# --- gitea api wrappers (curl + token; project id is "owner/repo" string) --
+
+gt_host() {
+  # GITEA_HOST wins; else derive scheme+host from `origin` remote.
+  if [[ -n ${GITEA_HOST:-} ]]; then printf '%s' "${GITEA_HOST%/}"; return 0; fi
+  local remote
+  remote=$(git remote get-url origin 2>/dev/null) || return 1
+  case $remote in
+    git@*:*)
+      remote=${remote#git@}; remote=${remote%%:*}
+      printf 'https://%s' "$remote" ;;
+    https://*|http://*)
+      printf '%s' "$remote" | sed -E 's#^(https?://[^/]+).*#\1#' ;;
+    *) return 1 ;;
+  esac
+}
+
+gt_api() {
+  local path=$1 host
+  host=$(gt_host) || return 1
+  local url="${host}/api/v1/${path#/}"
+  if [[ -n ${GITEA_TOKEN:-} ]]; then
+    curl -fsS -H "Authorization: token $GITEA_TOKEN" "$url" 2>/dev/null
+  else
+    curl -fsS "$url" 2>/dev/null
+  fi
+}
+
+# repo arg: "" means derive from current dir's origin remote. Result is "owner/repo".
+gt_resolve_repo() {
+  local p=${1:-} remote
+  if [[ -n $p ]]; then printf '%s' "${p%.git}"; return 0; fi
+  remote=$(git remote get-url origin 2>/dev/null) || return 1
+  case $remote in
+    git@*:*)        p=${remote#*:} ;;
+    https://*|http://*)
+      p=${remote#*://}; p=${p#*/} ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "${p%.git}"
+}
+
+gt_fetch_latest_run_json() {
+  # gitea wraps results in {"workflow_runs": [...], "total_count": N}
+  gt_api "repos/$1/actions/runs?branch=$2&limit=1"
+}
+gt_fetch_run_json() {
+  gt_api "repos/$1/actions/runs/$2"
+}
+
+# --- provider-aware fetch dispatch -----------------------------------------
+
+fetch_repo_id() {
+  case $PROVIDER in
+    gitlab) gl_fetch_project_id "$@" ;;
+    gitea)  gt_resolve_repo     "$@" ;;
+  esac
+}
+fetch_latest_json() {
+  case $PROVIDER in
+    gitlab) gl_fetch_latest_pipeline_json "$@" ;;
+    gitea)  gt_fetch_latest_run_json      "$@" ;;
+  esac
+}
+fetch_run_json() {
+  case $PROVIDER in
+    gitlab) gl_fetch_pipeline_json "$@" ;;
+    gitea)  gt_fetch_run_json      "$@" ;;
+  esac
+}
+
+# Read a status from a fetched JSON blob and normalize gitea vocabulary
+# (failure/cancelled/in_progress/waiting/queued) into gitlab's vocabulary
+# (failed/canceled/running/pending) — lets the main loop stay provider-agnostic.
+read_status() {
+  local raw=$1 s
+  s=$(printf '%s' "$raw" | extract_str status)
+  if [[ $PROVIDER == gitea ]]; then
+    case $s in
+      failure)        s=failed ;;
+      cancelled)      s=canceled ;;
+      in_progress)    s=running ;;
+      waiting|queued) s=pending ;;
+    esac
+  fi
+  printf '%s' "$s"
+}
+
+read_url() {
+  local raw=$1
+  case $PROVIDER in
+    gitlab) printf '%s' "$raw" | extract_str web_url ;;
+    gitea)  printf '%s' "$raw" | extract_str html_url ;;
+  esac
 }
 
 # --- desktop notify + bell -------------------------------------------------
@@ -77,8 +208,8 @@ notify() {
   printf '\a'
 }
 
-# --- pipeline registry: parallel arrays, keyed by pipeline id (globally unique)
-
+# --- pipeline registry: parallel arrays, keyed by run id (globally unique
+# within a provider; we only watch one provider per invocation)
 PIDS=() PROJS=() STATUSES=() URLS=() MANUAL_NOTIFIED=()
 
 idx_of() {
@@ -97,11 +228,14 @@ register() {
   return 0
 }
 
-# --- discover downstream/triggered child pipelines ------------------------
+# --- discover downstream/triggered child pipelines (gitlab only) ----------
 
 discover_children() {
+  # gitea actions has no equivalent of gitlab bridges/triggered children.
+  [[ $PROVIDER != gitlab ]] && return 0
+
   local proj=$1 pid=$2 bridges flat match cpid cproj curl
-  bridges=$(fetch_bridges_json "$proj" "$pid") || return 0
+  bridges=$(gl_fetch_bridges_json "$proj" "$pid") || return 0
   [[ -z $bridges ]] && return 0
   flat=$(printf '%s' "$bridges" | tr -d '\n\r')
 
@@ -121,42 +255,58 @@ discover_children() {
 
 main() {
   case ${1:-} in -h|--help) usage; exit 0 ;; esac
-  command -v glab >/dev/null 2>&1 || die "glab not found in PATH"
 
   local arg=${1:-} root_proj root_pid root_path=""
+
+  PROVIDER=$(detect_provider "$arg")
+
+  case $PROVIDER in
+    gitlab) command -v glab >/dev/null 2>&1 || die "glab not found in PATH" ;;
+    gitea)  command -v curl >/dev/null 2>&1 || die "curl not found in PATH" ;;
+    *)      die "unknown provider: $PROVIDER (set BONG_PROVIDER=gitlab|gitea)" ;;
+  esac
 
   if [[ -z $arg ]]; then
     local branch
     branch=$(git symbolic-ref --short HEAD 2>/dev/null) || die "not in a git repo (and no id/url given)"
-    root_proj=$(fetch_project_id "")
-    [[ -z $root_proj ]] && die "couldn't resolve current repo via glab (auth? remote?)"
+    root_proj=$(fetch_repo_id "")
+    [[ -z $root_proj ]] && die "couldn't resolve current repo (auth? remote?)"
     local list_json
-    list_json=$(fetch_latest_pipeline_json "$root_proj" "$branch")
-    [[ -z $list_json || $list_json == "[]" ]] && die "no pipelines found for ref '$branch'"
+    list_json=$(fetch_latest_json "$root_proj" "$branch")
+    [[ -z $list_json || $list_json == "[]" ]] && die "no pipelines/runs found for ref '$branch'"
     root_pid=$(printf '%s' "$list_json" | extract_num id)
-    [[ -z $root_pid ]] && die "couldn't extract pipeline id"
+    [[ -z $root_pid ]] && die "couldn't extract pipeline/run id"
   elif [[ $arg =~ ^[0-9]+$ ]]; then
     root_pid=$arg
-    root_proj=$(fetch_project_id "")
+    root_proj=$(fetch_repo_id "")
     [[ -z $root_proj ]] && die "couldn't resolve current repo (run from inside the repo, or pass a url)"
-  elif [[ $arg =~ ^https?://[^/]+/(.+)/-/pipelines/([0-9]+) ]]; then
+  elif [[ $PROVIDER == gitlab && $arg =~ ^https?://[^/]+/(.+)/-/pipelines/([0-9]+) ]]; then
     root_path=${BASH_REMATCH[1]}
     root_pid=${BASH_REMATCH[2]}
-    root_proj=$(fetch_project_id "$root_path")
+    root_proj=$(fetch_repo_id "$root_path")
     [[ -z $root_proj ]] && die "couldn't resolve project '$root_path' via glab"
+  elif [[ $PROVIDER == gitea && $arg =~ ^(https?://[^/]+)/(.+)/actions/runs/([0-9]+) ]]; then
+    # url-supplied host wins over auto-detect (and over GITEA_HOST? no — env wins
+    # in gt_host(), which is intentional for cases where the page url differs
+    # from the api host. but if no env, this becomes the host.)
+    GITEA_HOST=${GITEA_HOST:-${BASH_REMATCH[1]}}
+    root_path=${BASH_REMATCH[2]}
+    root_pid=${BASH_REMATCH[3]}
+    root_proj=$(fetch_repo_id "$root_path")
+    [[ -z $root_proj ]] && die "couldn't resolve repo '$root_path'"
   else
-    die "can't parse '$arg' as pipeline id or url"
+    die "can't parse '$arg' as ${PROVIDER} pipeline/run id or url"
   fi
 
   # sanity-check the root so we fail fast on bad ids
   local root_json root_status
-  root_json=$(fetch_pipeline_json "$root_proj" "$root_pid")
-  [[ -z $root_json ]] && die "pipeline #$root_pid not found in project $root_proj"
-  root_status=$(printf '%s' "$root_json" | extract_str status)
-  [[ -z $root_status ]] && die "couldn't read pipeline #$root_pid (api error?)"
+  root_json=$(fetch_run_json "$root_proj" "$root_pid")
+  [[ -z $root_json ]] && die "pipeline/run #$root_pid not found in $root_proj"
+  root_status=$(read_status "$root_json")
+  [[ -z $root_status ]] && die "couldn't read pipeline/run #$root_pid (api error?)"
 
-  register "$root_pid" "$root_proj" "$(printf '%s' "$root_json" | extract_str web_url)"
-  log "watching pipeline #$root_pid (root status: $root_status)"
+  register "$root_pid" "$root_proj" "$(read_url "$root_json")"
+  log "watching ${PROVIDER} #$root_pid (root status: $root_status)"
 
   local failed_ids=()
 
@@ -173,12 +323,12 @@ main() {
       # already terminally done? skip. (manual is NOT terminal — keep polling)
       case $prev in success|failed|canceled|skipped) continue ;; esac
 
-      json=$(fetch_pipeline_json "$proj" "$pid")
+      json=$(fetch_run_json "$proj" "$pid")
       if [[ -z $json ]]; then active=1; continue; fi
-      status=$(printf '%s' "$json" | extract_str status)
+      status=$(read_status "$json")
       if [[ -z $status ]]; then active=1; continue; fi
 
-      url=$(printf '%s' "$json" | extract_str web_url)
+      url=$(read_url "$json")
       [[ -z ${URLS[i]} && -n $url ]] && URLS[i]=$url
 
       if [[ $status != "$prev" ]]; then
@@ -203,7 +353,7 @@ main() {
 
       # always look for new downstreams on this pipeline (cheap; bridges may
       # appear at any time while parent is non-terminal, and once-on-terminal
-      # catches late triggers from manual bridge jobs).
+      # catches late triggers from manual bridge jobs). gitea: no-op.
       discover_children "$proj" "$pid"
     done
 
